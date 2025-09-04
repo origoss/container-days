@@ -1,0 +1,7 @@
+image:
+  registry: je
+  repository: pseudo-postgres
+  tag: 16
+settings:
+   superuserPassword:
+     value: Origoss12345678
