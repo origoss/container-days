@@ -1,0 +1,329 @@
+* Demo workflow
+** Intro part
+
+We welcome the player and ask him whether he/she is good and
+Kubernetes troubleshooting. We tell them that there is a simple
+Kubernetes cluster that runs a Postgresql database that contains user
+credentials.
+
+We received reports recently that the credentials may have been
+leaked. More and more users are complaining about "hacked" accounts.
+
+Your task is to verify the system from security perspective.
+
+** Troubleshooting part
+
+We give the user a laptop, with =kubectl= and =k9s= installed. They
+have admin access. They will probably check the pods, the logs, but
+there is nothing suspicious.
+
+We give them the following hints:
+
+1. No one can access the database except for us.
+2. The system is highly secured. An external firewall is in
+   place. Nobody can access the database from the outside.
+3. We have recently reinstalled the host operating system. There can
+   be no virus there.
+4. Before the incident, we performed a Postgresql version upgrade.
+
+The user will unable to find the security issue.
+
+** Whisker part
+
+We will present the user the Whisker dashboard. The user will play
+with it. With our help, they will find a suspicious outgoing
+connection:
+
+[[file:whisker-shot.png]]
+
+** NetworkPolicy part (Optional, TODO)
+
+If the player is interested, we can help them to provision a network
+policy that prevents the communication to the public internet.
+
+* Preparations
+
+These preparations help to give a demo in an unreliable-network
+environment.
+
+** Firewall
+
+Disable the firewall on the host.
+
+** Dummy network interface
+
+Create a dummy network interface with the name =whisker=.
+
+#+begin_src bash :eval never
+sudo ip link add dev whisker type dummy
+sudo ip addr add 3.14.137.65/28 dev whisker
+#+end_src
+
+** Postgres image
+*** Building the image
+
+You can build the image with the following command.
+
+#+begin_src bash :results output
+docker build 2025/postgresql/ -t postgresql/postgresql:16
+#+end_src
+
+*** Save the image
+
+Save the image.
+
+#+begin_src bash :results output
+docker save postgresql/postgresql:16 -o postgres_16.tar
+#+end_src
+
+#+RESULTS:
+
+** Postgres manifest files
+
+You can generate the Postgres deployment manifest with the following
+command.
+
+#+begin_src bash :results output :dir 2025/postgresql/hack
+helm template postgres \
+  --repo https://groundhog2k.github.io/helm-charts \
+  --namespace postgres \
+  --create-namespace \
+  -f postgres-values.yaml \
+  --version 1.5.7 > postgres.yaml
+#+end_src
+
+** Calico resources
+*** Manifest files
+
+Download the Calico manifest files:
+
+#+begin_src bash :results output
+curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.30.3/manifests/operator-crds.yaml
+curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.30.3/manifests/tigera-operator.yaml
+curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.30.3/manifests/custom-resources.yaml
+#+end_src
+
+#+RESULTS:
+
+Then update =custom-resources.yaml= so that the
+=spec.calicoNetwork.ipPools.[0].cidr= field has the value
+=192.168.101.0= in the =Installation= resource.
+
+*** Container images
+
+#+begin_src bash :results output
+VERSION="v3.30.3"
+IMAGES=("typha" "kube-controllers" "node" "csi")
+
+for IMAGE in ${IMAGES[@]}
+do
+  echo "Saving ${IMAGE}:${VERSION}"
+  docker pull "docker.io/calico/${IMAGE}:${VERSION}"
+  docker save "docker.io/calico/${IMAGE}:${VERSION}" -o "${IMAGE}.tar"
+done
+
+VERSION="v1.38.6"
+echo "Saving operator:${VERSION}"
+docker pull "quay.io/tigera/operator:${VERSION}"
+docker save "quay.io/tigera/operator:${VERSION}" -o operator.tar
+#+end_src
+
+#+RESULTS:
+#+begin_example
+Saving typha:v3.30.3
+v3.30.3: Pulling from calico/typha
+Digest: sha256:0468e1a3f8f228e3a518f005bcf4cd46a0e32c767ee9f73bbc94fe40a5202658
+Status: Image is up to date for calico/typha:v3.30.3
+docker.io/calico/typha:v3.30.3
+Saving kube-controllers:v3.30.3
+v3.30.3: Pulling from calico/kube-controllers
+Digest: sha256:b9df43a10ec4cc40ab95779f646d1f9c1675259b3baacf883f5247333bb6385d
+Status: Image is up to date for calico/kube-controllers:v3.30.3
+docker.io/calico/kube-controllers:v3.30.3
+Saving node:v3.30.3
+v3.30.3: Pulling from calico/node
+de026749f5a7: Pulling fs layer
+de026749f5a7: Verifying Checksum
+de026749f5a7: Download complete
+de026749f5a7: Pull complete
+Digest: sha256:92d8bcca3280cd27b9c98cb6e70c3af10ad6ff8accd288919b04ae0cd6021c2e
+Status: Downloaded newer image for calico/node:v3.30.3
+docker.io/calico/node:v3.30.3
+Saving csi:v3.30.3
+v3.30.3: Pulling from calico/csi
+0d2f60593278: Already exists
+6de00b3253d9: Pulling fs layer
+6de00b3253d9: Verifying Checksum
+6de00b3253d9: Download complete
+6de00b3253d9: Pull complete
+Digest: sha256:e14f5f7c46b3393459293dfffdd579d9214cb77516f735d2719fdda8b1e6c62f
+Status: Downloaded newer image for calico/csi:v3.30.3
+docker.io/calico/csi:v3.30.3
+Saving operator:v1.38.6
+v1.38.6: Pulling from tigera/operator
+d47710f2e067: Pulling fs layer
+590835e90beb: Pulling fs layer
+d47710f2e067: Download complete
+d47710f2e067: Pull complete
+590835e90beb: Verifying Checksum
+590835e90beb: Download complete
+590835e90beb: Pull complete
+Digest: sha256:00a7a9b62f9b9a4e0856128b078539783b8352b07f707bff595cb604cc580f6e
+Status: Downloaded newer image for quay.io/tigera/operator:v1.38.6
+quay.io/tigera/operator:v1.38.6
+#+end_example
+
+* Create demo environment manually
+
+** Start the netcat server
+
+#+begin_src bash :eval never
+sudo nc -kl 3.14.137.65 137 | pv > /dev/null
+#+end_src
+
+** Kind config file
+
+#+begin_src yaml :tangle kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+- role: worker
+- role: worker
+networking:
+  disableDefaultCNI: true
+  podSubnet: 192.168.101.0/24
+#+end_src
+
+** Create the kind cluster
+
+#+begin_src bash :results output
+kind create cluster --name whisker-the-game --config kind-config.yaml
+#+end_src
+
+#+RESULTS:
+
+Then check the cluster state:
+#+begin_src bash :results output
+kubectl cluster-info
+#+end_src
+
+#+RESULTS:
+: Kubernetes control plane is running at https://127.0.0.1:33839
+: CoreDNS is running at https://127.0.0.1:33839/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+:
+: To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
+
+** Upload the container images
+
+#+begin_src bash :results output
+IMAGES=("typha" "kube-controllers" "node" "csi" "operator" "postgres_16")
+
+for IMAGE in ${IMAGES[@]}
+do
+  echo "Uploading ${IMAGE}"
+  kind load image-archive "${IMAGE}.tar" \
+       --name whisker-the-game           \
+       --nodes whisker-the-game-control-plane,whisker-the-game-worker,whisker-the-game-worker2
+done
+#+end_src
+
+#+RESULTS:
+: Uploading typha
+: Uploading kube-controllers
+: Uploading node
+: Uploading csi
+: Uploading operator
+: Uploading postgres_16
+
+** Install Calico CRDs
+
+#+begin_src bash :results output
+kubectl create -f operator-crds.yaml
+#+end_src
+
+#+RESULTS:
+#+begin_example
+customresourcedefinition.apiextensions.k8s.io/apiservers.operator.tigera.io created
+customresourcedefinition.apiextensions.k8s.io/gatewayapis.operator.tigera.io created
+customresourcedefinition.apiextensions.k8s.io/goldmanes.operator.tigera.io created
+customresourcedefinition.apiextensions.k8s.io/imagesets.operator.tigera.io created
+customresourcedefinition.apiextensions.k8s.io/installations.operator.tigera.io created
+customresourcedefinition.apiextensions.k8s.io/managementclusterconnections.operator.tigera.io created
+customresourcedefinition.apiextensions.k8s.io/tigerastatuses.operator.tigera.io created
+customresourcedefinition.apiextensions.k8s.io/whiskers.operator.tigera.io created
+customresourcedefinition.apiextensions.k8s.io/bgpconfigurations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/bgpfilters.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/bgppeers.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/blockaffinities.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/caliconodestatuses.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/clusterinformations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/felixconfigurations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/globalnetworkpolicies.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/globalnetworksets.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/hostendpoints.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ipamblocks.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ipamconfigs.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ipamhandles.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ippools.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/ipreservations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/kubecontrollersconfigurations.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/networkpolicies.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/networksets.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/stagedglobalnetworkpolicies.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/stagedkubernetesnetworkpolicies.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/stagednetworkpolicies.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/tiers.crd.projectcalico.org created
+customresourcedefinition.apiextensions.k8s.io/adminnetworkpolicies.policy.networking.k8s.io created
+customresourcedefinition.apiextensions.k8s.io/baselineadminnetworkpolicies.policy.networking.k8s.io created
+#+end_example
+
+** Install the Tigera Operator
+
+#+begin_src bash :results output
+kubectl create -f tigera-operator.yaml
+#+end_src
+
+#+RESULTS:
+: namespace/tigera-operator created
+: serviceaccount/tigera-operator created
+: clusterrole.rbac.authorization.k8s.io/tigera-operator-secrets created
+: clusterrole.rbac.authorization.k8s.io/tigera-operator created
+: clusterrolebinding.rbac.authorization.k8s.io/tigera-operator created
+: rolebinding.rbac.authorization.k8s.io/tigera-operator-secrets created
+: deployment.apps/tigera-operator created
+
+** Install the Calico resources
+
+#+begin_src bash :results output
+kubectl create ns calico-system
+kubectl create -f custom-resources.yaml
+#+end_src
+
+#+RESULTS:
+: apiserver.operator.tigera.io/default created
+: goldmane.operator.tigera.io/default created
+: whisker.operator.tigera.io/default created
+
+** Install postgres YAML manifests
+
+#+begin_src bash :results output :dir 2025/postgresql/hack
+kubectl create ns postgres --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f postgres.yaml
+#+end_src
+
+#+RESULTS:
+: namespace/postgres created
+: secret/release-name-postgres created
+: configmap/release-name-postgres-scripts created
+: service/release-name-postgres created
+: statefulset.apps/release-name-postgres created
+
+* Cleanup
+** Delete kind cluster
+
+#+begin_src bash :results output
+kind delete cluster --name whisker-the-game
+#+end_src
+
+#+RESULTS:

@@ -333,7 +333,7 @@ _pg_want_help() {
 }
 
 _main() {
-        ./stat_collector.sh &
+        /usr/local/bin/stat_collector.sh &
         disown
 	# if first arg looks like a flag, assume we want to run postgres server
 	if [ "${1:0:1}" = '-' ]; then
