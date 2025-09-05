@@ -1,6 +1,6 @@
 image:
-  registry: je
-  repository: pseudo-postgres
+  registry: postgresql
+  repository: postgresql
   tag: 16
 settings:
    superuserPassword:
