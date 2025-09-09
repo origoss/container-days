@@ -1,0 +1,11 @@
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: db
+  namespace: default
+spec:
+  egress:
+  - action: Deny # Deny or Allow
+  selector: app.kubernetes.io/name == 'postgres'
+  types:
+  - Egress
