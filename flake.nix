@@ -30,13 +30,19 @@
         '';
       in
         {
-          devShells.default = pkgs.mkShell { packages = with pkgs; [
-            calicoctl-package
-            k9s
-            kind
-            kubernetes-helm
-            pv
-          ]; };
+          devShells.default = pkgs.mkShell {
+            shellHook = ''
+              export EDITOR=${pkgs.nano}/bin/nano
+            '';
+            packages = with pkgs; [
+              calicoctl-package
+              k9s
+              kind
+              kubernetes-helm
+              nano
+              pv
+            ];
+          };
         }
     );
 }
