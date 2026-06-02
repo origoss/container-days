@@ -1,0 +1,20 @@
+# Staged (dry-run) GlobalNetworkPolicy: Calico v3.32+ feature.
+# This policy is NOT enforced. Whisker shows what flows it WOULD block as "pending/staged".
+# Apply this first, review in Whisker's staged-actions filter, then replace with the real policy.
+apiVersion: projectcalico.org/v3
+kind: StagedGlobalNetworkPolicy
+metadata:
+  name: deny-db-egress
+spec:
+  stagedAction: Set
+  tier: kube-admin
+  order: 100
+  selector: app.kubernetes.io/name == 'postgres'
+  namespaceSelector: kubernetes.io/metadata.name == 'postgres'
+  types:
+  - Egress
+  egress:
+  - action: Deny
+    destination:
+      nets:
+      - 0.0.0.0/0

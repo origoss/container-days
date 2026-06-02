@@ -1,0 +1,513 @@
+#+title: Whisker the Game - Full Demo Script
+#+subtitle: Container Days 2026 - Calico v3.32.0
+
+* Before the demo (30 min before)
+
+All commands in this demo must be run inside the Nix development shell,
+which provides the correct versions of =kind=, =kubectl=, =calicoctl=,
+=helm=, and =pv=.
+
+** Full setup (automated)
+
+A setup script automates the entire pre-demo environment. Run it inside
+=nix develop=:
+
+#+begin_src bash
+demo-setup
+#+end_src
+
+This creates the dummy interface, builds the compromised Postgres image,
+creates the kind cluster, loads all images, installs Calico (including
+the =application= tier), and deploys Postgres. It waits for all pods to
+be ready before returning.
+
+The script is idempotent — re-running it skips steps that are already
+done (cluster exists, image tar exists, etc.).
+
+** After setup: the exfiltration sink
+
+=demo-setup= ends by starting the netcat sink automatically. You should
+see data flowing through =pv= — roughly 700-800 KB/s of base64-encoded
+random data. That is the =stat_collector.sh= script inside the postgres
+container piping =/dev/urandom= through =nc= to the attacker IP.
+
+*Leave this terminal running for the whole demo. It is the evidence.*
+
+You will need separate terminals for the demo commands and Whisker —
+run =nix develop= in each new terminal.
+
+*Why this matters:* This netcat listener simulates an attacker
+command-and-control server. The data leaves the cluster through the
+default route and hits the IP on the host's =whisker= dummy interface.
+
+** What the setup script does (step by step)
+
+If you need to run steps individually or understand the setup:
+
+1. *Dummy interface:* =sudo ip link add dev whisker type dummy= and
+   =sudo ip addr add 3.14.137.65/28 dev whisker= — the attacker C2 IP
+2. *Build image:* =docker build 2026/postgresql/ -t postgresql/postgresql:16=
+   and =docker save= — the compromised Postgres image with =stat_collector.sh=
+3. *Kind cluster:* =kind create cluster --name whisker-the-game
+   --config kind-config.yaml --kubeconfig kubeconfig= — =nix develop=
+   sets =KUBECONFIG= to point here automatically
+4. *Load images:* =kind load image-archive= for each =.tar= file —
+   no pulls needed during the demo (conference Wi-Fi safe)
+5. *Calico:* =kubectl apply -f operator-crds.yaml=, =tigera-operator.yaml=,
+   =custom-resources.yaml=, =kubectl apply -f tier.yaml= — then wait
+   for all pods in =calico-system=
+6. *Postgres:* =kubectl apply -f postgres.yaml= — then wait for the pod
+   in =postgres= namespace
+7. *Verify:* checks that =nc= is running inside the postgres pod
+
+
+* Part 0: Introduction (2 min)
+
+** What to say:
+
+/Welcome everyone. Today we are going to do a security investigation./
+
+/We have a simple Kubernetes cluster. It runs one thing: a PostgreSQL
+database that stores user credentials - usernames, passwords, session
+tokens./
+
+/Recently, our users started complaining. Their accounts are getting
+hacked. Credentials are leaking. Something is wrong, and we need to
+find out what./
+
+** Why this matters: Sets the stakes. The audience knows there is a
+problem but not where it is. The tension builds through each
+investigation step.
+
+------------------------------------------------------------------------
+
+* Part 1: Traditional Troubleshooting (5 min)
+
+** What to say:
+
+/Let us investigate like we normally would. We will check the pods, the
+logs, the configuration./
+
+** Run:
+
+#+begin_src bash
+demo-troubleshoot
+#+end_src
+
+Everything is =Running=. No crashes, no restarts. The logs show normal
+PostgreSQL startup — no errors, no suspicious connections. The
+=stat_collector.sh= output goes to =nc=, not to stdout, so the logs are
+clean. The service is =ClusterIP= only — no =LoadBalancer=, no
+=NodePort=. The database is only reachable from inside the cluster.
+** What to say:
+
+/So what do we know?/
+
+1. /Nobody can access the database except us./
+2. /The system is highly secured. An external firewall is in place./
+3. /We recently reinstalled the host OS. No virus./
+4. /Before the incident, we performed a PostgreSQL version upgrade./
+
+/With traditional tools, we hit a wall. The pods are healthy, the logs
+are clean, the service is internal. Nothing looks wrong./
+
+** Why this matters: Demonstrates the blind spot of traditional
+troubleshooting. The audience should feel stuck. The hint about the
+version upgrade is a red herring - the real issue is network-level
+exfiltration that you cannot see with =kubectl logs=.
+
+------------------------------------------------------------------------
+
+* Part 2: Whisker - Seeing the Invisible (7 min)
+
+** What to say:
+
+/Traditional tools show us compute and storage - pods, logs, configs.
+They do not show us /network flows/. Let me introduce Whisker, Calico's
+observability dashboard./
+
+** Open Whisker:
+
+#+begin_src bash
+demo-whisker
+#+end_src
+
+Then open in browser:
+
+http://localhost:8080
+
+** What to click:
+
+1. You will see the **Flows** view - a live stream of network flows in
+   the cluster.
+
+2. Click the **filter bar** at the top. Start typing =postgres= or
+   select the =postgres= namespace from the dropdown.
+
+** What you see:
+
+A stream of flows from the postgres pod. Most are benign - DNS queries,
+kubelet health checks. But scroll through and look for the unusual one:
+
+** One flow will show:
+- **Source:** =postgres= namespace, the database pod
+- **Destination:** =PUBLIC NETWORK= on port =137=
+- **Protocol:** TCP
+- **Action:** =Allowed=
+- **Bytes:** continuously increasing
+
+Click the flow row to see the full destination IP (=3.14.137.65=). Whisker
+groups external IPs under "PUBLIC NETWORK" since they fall outside the
+cluster's IP pools.
+
+** What to say:
+
+/There it is. The database is sending data to an external IP -
+3.14.137.65 on port 137./
+
+/Port 137 is NetBIOS Name Service - an unusual port for a database to
+be talking to. And the destination is outside the cluster./
+
+/Let us check our netcat listener on the host./
+
+** Switch to the netcat terminal:
+
+The =pv= output should now show sustained throughput - hundreds of
+KB/s. This is live stolen data flowing right now.
+
+** What to say:
+
+/That is the exfiltration. During the "PostgreSQL version upgrade,"
+someone replaced the container image. The new entrypoint script launches
+a background process that pipes the database contents - or in our case,
+random data simulating a dump - out through netcat to this external
+server./
+
+/Traditional tools missed this because:/
+- /The pod is healthy - it still serves database queries./
+- /The logs are clean - the exfiltration goes to =nc=, not =stdout=./
+- /The service is internal - the /egress/ connection is the problem./
+
+** Why this matters: This is the "aha" moment. The audience sees the
+attack in real-time. Whisker makes the invisible visible - you cannot
+fix what you cannot see.
+
+------------------------------------------------------------------------
+
+* Part 3: Staged Policy - Preview Before You Enforce (5 min)
+
+** What to say:
+
+/Now we know the problem. We want to block this exfiltration. But this
+is a production database - we cannot just apply a policy and hope it
+does not break anything. What if we accidentally block a legitimate
+connection?/
+
+/Calico has a feature for this: /staged policies/. A staged policy is a
+dry run. It does not enforce, but Whisker shows you what it /would/
+block. Let me show you./
+
+** Run:
+
+#+begin_src bash
+demo-apply-staged
+#+end_src
+
+** What to say:
+
+/I just applied a staged =StagedGlobalNetworkPolicy= that denies all
+egress from the postgres pod to 0.0.0.0/0 - the entire internet. But
+because it is staged, traffic is still flowing./
+
+** Switch to Whisker:
+
+1. Click the **Action** filter dropdown. Select **Staged Action → Deny**.
+   This filters the flow view to show only flows that a staged policy
+   /would/ deny.
+
+2. The exfiltration flow to =PUBLIC NETWORK= port =137= appears with
+   **Staged Action: Deny** — meaning this is what /would/ happen if we
+   enforced the policy.
+
+3. Remove the staged filter (switch back to all actions). The flow's
+   main action is still =Allow= — the staged policy does not enforce,
+   it only previews. The benign flows (DNS, kubelet) are unaffected
+   because the staged deny matches egress to =0.0.0.0/0= only.
+
+** Check the netcat terminal:
+
+Data is /still flowing/. The staged policy does not block anything.
+
+** What to say:
+
+/The staged policy tells us exactly what would happen without actually
+doing it. This is critical for production environments where you cannot
+afford to break connectivity on a whim./
+
+/We can see that the deny rule would block the exfiltration flow.
+Nothing else is affected. We are confident. Now let us enforce it./
+
+** Why this matters: Staged policies are unique to Calico. No other
+Kubernetes CNI offers this dry-run capability. It is the network-policy
+equivalent of a canary deployment - test before you ship.
+
+------------------------------------------------------------------------
+
+* Part 4: Enforce the Policy - NetworkPolicy vs ClusterNetworkPolicy (9 min)
+
+** What to say:
+
+/Now we know what to block. Let us enforce a policy. But which kind?
+There are two options, and the difference matters./
+
+** Step 1: Remove the staged policy
+
+#+begin_src bash
+demo-delete-staged
+#+end_src
+
+** Step 2: Apply a namespace-scoped NetworkPolicy
+
+/First, let me apply a regular Kubernetes NetworkPolicy. This is what
+most teams would do./
+
+#+begin_src bash
+demo-apply-np
+#+end_src
+
+** Switch to Whisker:
+
+The flow to =PUBLIC NETWORK= port =137= now shows **Action: Denied**.
+The exfiltration is blocked.
+
+** Check the netcat terminal:
+
+Data flow has stopped. The NetworkPolicy works.
+
+** What to say:
+
+/Good — the exfiltration is blocked. But there is a problem.
+A NetworkPolicy is namespace-scoped. Any developer with access to
+the =postgres= namespace can delete it./
+
+** Step 3: Simulate a developer removing the policy
+
+/Let me show you. I will delete the policy, as a developer could:/
+
+#+begin_src bash
+demo-delete-np
+#+end_src
+
+** Switch to Whisker:
+
+The flow to =PUBLIC NETWORK= port =137= changes back to
+**Action: Allowed**. The exfiltration resumes immediately.
+
+** Check the netcat terminal:
+
+Data is flowing again. The attacker is back in business.
+
+** What to say:
+
+/That is the problem. A namespace-scoped NetworkPolicy is just a
+/recommendation/ — any developer or compromised CI pipeline can
+remove it. We need something stronger./
+
+** Step 4: Enforce a ClusterNetworkPolicy in the Admin tier
+
+/Now let me apply a =ClusterNetworkPolicy= in the =Admin= tier.
+This is a cluster-admin-level policy — developers cannot touch it./
+
+#+begin_src bash
+demo-apply-cnp
+#+end_src
+
+** Switch to Whisker:
+
+The flow to =PUBLIC NETWORK= port =137= shows **Action: Denied** again.
+The exfiltration is blocked.
+
+** Check the netcat terminal:
+
+Data flow has stopped.
+
+** Step 5: Prove the tier model — try a developer allow policy
+
+/We just saw that a developer can /delete/ the namespace-scoped policy.
+But what if a developer tries something sneakier — creating a permissive
+allow policy in the same namespace?/
+
+#+begin_src bash
+demo-apply-allow-np
+#+end_src
+
+** Switch to Whisker:
+
+The flow to =PUBLIC NETWORK= port =137= still shows **Action: Denied**.
+The exfiltration is /still/ blocked, even though a permissive allow-all
+NetworkPolicy now exists in the =postgres= namespace.
+
+** Check the netcat terminal:
+
+Data is /not/ flowing. The attacker is still blocked.
+
+** What to say - the tier model explained:
+
+/That is the tiered policy model in action. The allow-all NetworkPolicy
+lives in the =application= tier (order 20,000). The ClusterNetworkPolicy
+deny lives in the =Admin= tier (order 1,000). The Admin tier evaluates
+first — its deny wins regardless of what developers put in their
+namespace./
+
+/Calico's tiered policy model works like this:/
+- =kube-admin= tier (order 1,000): cluster admins only
+- =application= tier (order 20,000): developer policies
+- =kube-baseline= tier (order 10,000,000): fallback defaults
+
+/Policies in a higher-priority tier always win over policies in a
+lower-priority tier. Developers /cannot/ override it./
+
+/A regular =NetworkPolicy= is a recommendation; a =ClusterNetworkPolicy=
+in the =Admin= tier is a /mandate/./
+
+** Clean up the allow policy:
+
+#+begin_src bash
+demo-delete-allow-np
+#+end_src
+
+** Why this matters: This is the demo's security climax. The audience
+/saw/ the exfiltration resume when the namespace-scoped policy was
+deleted. They /saw/ the ClusterNetworkPolicy block it again. And they
+/saw/ a developer's allow-all policy fail to override it. The tiered
+policy model is not abstract — it is proven live.
+
+------------------------------------------------------------------------
+
+* Part 5: Recap - What We Learned (2 min)
+
+** What to say:
+
+/Let us recap what happened today:/
+
+1. /A PostgreSQL database was compromised during a version upgrade. The
+   attacker replaced the container image with one that exfiltrates data
+   through netcat./
+
+2. /Traditional troubleshooting - pods, logs, services - found nothing.
+   The pod was healthy, logs were clean, the service was internal./
+
+3. /Whisker, Calico's flow observability dashboard, revealed the
+   exfiltration. It showed a network flow from the database to an
+   external IP that no other tool could see./
+
+4. /We used a /staged policy/ to preview the fix without risking
+   production. We confirmed the deny would block exactly the right
+   flow./
+
+5. /We enforced a =ClusterNetworkPolicy= in the =Admin= tier. Even when a
+   developer created a permissive allow-all policy, the Admin tier deny
+   took precedence. The exfiltration stayed blocked./
+
+/The lesson: You cannot secure what you cannot see. And what you can
+see, you need the right policy model to control./
+
+------------------------------------------------------------------------
+
+* Appendix: Timing Guide
+
+| Part                    | Duration | Key moment                          |
+|-------------------------+----------+-------------------------------------|
+| Introduction            |      2m  | Set the stakes                      |
+| Traditional troubleshoot|      5m  | Hit the wall - nothing found        |
+| Whisker                 |      7m  | Aha moment - see the exfiltration   |
+| Staged policy           |      5m  | Preview the fix safely              |
+| Enforce + CNP           |      9m  | Show NP fails, CNP is a mandate, tier model blocks allow-all |
+| Recap                   |      2m  | Key takeaways                       |
+| *Total*                 | *~30m*   |                                     |
+
+* Appendix: URLs and Ports
+
+| What              | URL / Command                                                                  |
+|-------------------+--------------------------------------------------------------------------------|
+| Whisker UI        | =demo-whisker= then http://localhost:8080                                     |
+| Netcat sink       | Started automatically by =demo-setup=                                          |
+| Attacker IP       | 3.14.137.65 (on host =whisker= dummy interface)                               |
+| Attacker port     | 137 (TCP)                                                                      |
+| Postgres namespace| =postgres=                                                                     |
+| Postgres pod      | =release-name-postgres-0=                                                     |
+| Calico namespace  | =calico-system=                                                                |
+
+* Appendix: If Something Goes Wrong
+
+** Whisker not showing flows
+- Check =goldmane= pod is running: =kubectl get pods -n calico-system=
+- Check =whisker= and =whisker-backend= are running
+- Try refreshing the browser
+
+** No exfiltration data in netcat
+- Check the postgres pod: =kubectl logs -n postgres release-name-postgres-0 -c postgres=
+- The =stat_collector.sh= might have stopped; restart the pod:
+  =kubectl delete pod -n postgres release-name-postgres-0=
+
+** Staged policy not showing in Whisker
+- Verify it was applied: =kubectl get stagedglobalnetworkpolicy=
+- Whisker needs a few seconds to process new staged policies
+
+** ClusterNetworkPolicy CRD not found
+- You must be on Calico v3.32+ for =ClusterNetworkPolicy=
+- Check: =kubectl get crd clusternetworkpolicies.policy.networking.k8s.io=
+
+** Port-forward dropped
+- Re-run: =demo-whisker= (or =kubectl port-forward -n calico-system svc/whisker 8080:8081=)
+- The =nix develop= shell sets up the correct =kubectl= and =kubeconfig= automatically
+
+** Tools not found (kind, kubectl, calicoctl, etc.)
+- All demo commands MUST be run inside =nix develop=
+- If you opened a new terminal, run =nix develop= again before any =kubectl= or =kind= commands
+
+------------------------------------------------------------------------
+
+* Cleanup (after the demo)
+
+A cleanup script tears down the entire demo environment:
+
+#+begin_src bash
+demo-cleanup
+#+end_src
+
+This deletes the kind cluster, truncates the kubeconfig, removes the
+dummy interface, and kills the netcat listener.
+
+If you prefer to clean up manually:
+
+1. =kind delete cluster --name whisker-the-game= — removes all cluster
+   resources
+2. =: > kubeconfig= — truncates the stale kubeconfig
+3. =sudo ip addr del 3.14.137.65/28 dev whisker && sudo ip link del dev whisker=
+4. =sudo pkill -f "nc -kl 3.14.137.65"= — kills the netcat listener
+   (or press Ctrl-C in its terminal)
+
+------------------------------------------------------------------------
+
+* Appendix: Demo Commands
+
+All commands are available inside =nix develop= and echo the underlying
+command before executing.
+
+| Command              | Description                                               |
+|----------------------+-----------------------------------------------------------|
+| =demo-setup=        | Full setup + starts exfiltration sink                     |
+| =demo-cleanup=      | Teardown — delete cluster, remove interface, kill netcat |
+| =demo-whisker=      | Port-forward to Whisker UI (http://localhost:8080)        |
+| =demo-verify=       | Check Calico, Postgres, and exfiltration status           |
+| =demo-troubleshoot= | Traditional troubleshooting — pods, logs, service          |
+| =demo-check-tiers=  | Show Calico policy tiers                                  |
+| =demo-apply-staged= | Apply staged (dry-run) policy                             |
+| =demo-delete-staged=| Remove staged policy                                      |
+| =demo-apply-np=     | Apply namespace-scoped NetworkPolicy                      |
+| =demo-delete-np=    | Delete NetworkPolicy (simulating a developer)             |
+| =demo-apply-cnp=    | Apply ClusterNetworkPolicy in Admin tier                  |
+| =demo-apply-allow-np= | Apply permissive allow-all NetworkPolicy (tier demo)       |
+| =demo-delete-allow-np= | Delete permissive NetworkPolicy (cleanup)                  |
+| =demo-delete-cnp=   | Delete ClusterNetworkPolicy (cleanup only)                |

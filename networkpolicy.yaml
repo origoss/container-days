@@ -1,0 +1,16 @@
+# Namespace-scoped NetworkPolicy: developers can create/modify/delete these.
+# This blocks the exfiltration, but a developer can simply delete it.
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: db
+  namespace: postgres
+spec:
+  selector: app.kubernetes.io/name == 'postgres'
+  types:
+  - Egress
+  egress:
+  - action: Deny
+    destination:
+      nets:
+      - 0.0.0.0/0

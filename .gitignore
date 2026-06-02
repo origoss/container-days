@@ -1,3 +1,13 @@
 2025/postgresql/hack/data
 /.direnv/
 *~
+
+# Container image archives (regenerated from README prep scripts)
+*.tar
+
+# Downloaded/generated manifests (regenerated from README prep scripts)
+/operator-crds.yaml
+/tigera-operator.yaml
+/custom-resources.yaml
+/postgres.yaml
+/kubeconfig

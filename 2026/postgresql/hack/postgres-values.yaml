@@ -1,0 +1,7 @@
+image:
+  registry: postgresql
+  repository: postgresql
+  tag: 16
+settings:
+   superuserPassword:
+     value: Origoss12345678

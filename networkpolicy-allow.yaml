@@ -1,0 +1,16 @@
+# Permissive allow-all egress — a developer might create this to bypass restrictions.
+# In the application tier, this CANNOT override a deny in the Admin tier.
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: allow-all-egress
+  namespace: postgres
+spec:
+  selector: app.kubernetes.io/name == 'postgres'
+  types:
+  - Egress
+  egress:
+  - action: Allow
+    destination:
+      nets:
+      - 0.0.0.0/0

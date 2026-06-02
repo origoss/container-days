@@ -36,10 +36,50 @@ connection:
 
 [[file:whisker-shot.png]]
 
-** NetworkPolicy part (Optional, TODO)
+** NetworkPolicy part
 
 If the player is interested, we can help them to provision a network
 policy that prevents the communication to the public internet.
+
+This section demonstrates Calico's tiered policy model introduced in
+v3.32 with =ClusterNetworkPolicy=.
+
+*** Step 1: Stage a deny policy (dry-run)
+
+Apply a *staged* =ClusterNetworkPolicy= that would deny all egress
+from the postgres database to the public internet. Because it is
+staged, it does /not/ take effect yet — but Whisker shows what it
+/would/ block.
+
+#+begin_src bash :results output
+kubectl apply -f staged-cnp.yaml
+#+end_src
+
+Switch to Whisker and use the new **staged-actions filter** to see
+which flows this policy would deny. The suspicious outgoing connection
+to =3.14.137.65= should appear as a "pending deny."
+
+*** Step 2: Enforce the policy
+
+Once we are confident the policy does what we expect, replace the
+staged policy with the real =ClusterNetworkPolicy=:
+
+#+begin_src bash :results output
+kubectl delete -f staged-cnp.yaml
+kubectl apply -f cluster-networkpolicy.yaml
+#+end_src
+
+The data exfiltration is now blocked. Whisker shows the connection as
+=Denied=.
+
+*** Why ClusterNetworkPolicy matters
+
+A regular Kubernetes =NetworkPolicy= is namespace-scoped: any
+developer with access to the namespace can create, modify, or delete
+it. A =ClusterNetworkPolicy= in the =Admin= tier (order 1000) is
+/enforced above/ all namespace-scoped policies — developers /cannot/
+override it. This is the key security differentiation of Calico's
+tiered policy model.
 
 * Preparations
 
@@ -65,7 +105,7 @@ sudo ip addr add 3.14.137.65/28 dev whisker
 You can build the image with the following command.
 
 #+begin_src bash :results output
-docker build 2025/postgresql/ -t postgresql/postgresql:16
+docker build 2026/postgresql/ -t postgresql/postgresql:16
 #+end_src
 
 *** Save the image
@@ -83,14 +123,19 @@ docker save postgresql/postgresql:16 -o postgres_16.tar
 You can generate the Postgres deployment manifest with the following
 command.
 
-#+begin_src bash :results output :dir 2025/postgresql/hack
+#+begin_src bash :results output :dir 2026/postgresql/hack
 helm template postgres \
   --repo https://groundhog2k.github.io/helm-charts \
   --namespace postgres \
   --create-namespace \
   -f postgres-values.yaml \
-  --version 1.5.7 > postgres.yaml
+  --version 1.6.3 | \
+  sed '/^metadata:/{n;s/^  name:/  namespace: postgres\n  name:/}' > postgres.yaml
 #+end_src
+
+Note: =helm template= does not inject =namespace:= into the rendered
+output. The =sed= pipe above adds =namespace: postgres= after each
+=metadata:= block so the resources land in the correct namespace.
 
 ** Calico resources
 *** Manifest files
@@ -98,9 +143,9 @@ helm template postgres \
 Download the Calico manifest files:
 
 #+begin_src bash :results output
-curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.30.3/manifests/operator-crds.yaml
-curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.30.3/manifests/tigera-operator.yaml
-curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.30.3/manifests/custom-resources.yaml
+curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.32.0/manifests/operator-crds.yaml
+curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.32.0/manifests/tigera-operator.yaml
+curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.32.0/manifests/custom-resources.yaml
 #+end_src
 
 #+RESULTS:
@@ -112,66 +157,22 @@ Then update =custom-resources.yaml= so that the
 *** Container images
 
 #+begin_src bash :results output
-VERSION="v3.30.3"
+VERSION="v3.32.0"
 IMAGES=("typha" "kube-controllers" "node" "csi")
 
 for IMAGE in ${IMAGES[@]}
 do
   echo "Saving ${IMAGE}:${VERSION}"
-  docker pull "docker.io/calico/${IMAGE}:${VERSION}"
-  docker save "docker.io/calico/${IMAGE}:${VERSION}" -o "${IMAGE}.tar"
+  docker pull "quay.io/calico/${IMAGE}:${VERSION}"
+  docker save "quay.io/calico/${IMAGE}:${VERSION}" -o "${IMAGE}.tar"
 done
 
-VERSION="v1.38.6"
+VERSION="v1.42.0"
 echo "Saving operator:${VERSION}"
 docker pull "quay.io/tigera/operator:${VERSION}"
 docker save "quay.io/tigera/operator:${VERSION}" -o operator.tar
 #+end_src
 
-#+RESULTS:
-#+begin_example
-Saving typha:v3.30.3
-v3.30.3: Pulling from calico/typha
-Digest: sha256:0468e1a3f8f228e3a518f005bcf4cd46a0e32c767ee9f73bbc94fe40a5202658
-Status: Image is up to date for calico/typha:v3.30.3
-docker.io/calico/typha:v3.30.3
-Saving kube-controllers:v3.30.3
-v3.30.3: Pulling from calico/kube-controllers
-Digest: sha256:b9df43a10ec4cc40ab95779f646d1f9c1675259b3baacf883f5247333bb6385d
-Status: Image is up to date for calico/kube-controllers:v3.30.3
-docker.io/calico/kube-controllers:v3.30.3
-Saving node:v3.30.3
-v3.30.3: Pulling from calico/node
-de026749f5a7: Pulling fs layer
-de026749f5a7: Verifying Checksum
-de026749f5a7: Download complete
-de026749f5a7: Pull complete
-Digest: sha256:92d8bcca3280cd27b9c98cb6e70c3af10ad6ff8accd288919b04ae0cd6021c2e
-Status: Downloaded newer image for calico/node:v3.30.3
-docker.io/calico/node:v3.30.3
-Saving csi:v3.30.3
-v3.30.3: Pulling from calico/csi
-0d2f60593278: Already exists
-6de00b3253d9: Pulling fs layer
-6de00b3253d9: Verifying Checksum
-6de00b3253d9: Download complete
-6de00b3253d9: Pull complete
-Digest: sha256:e14f5f7c46b3393459293dfffdd579d9214cb77516f735d2719fdda8b1e6c62f
-Status: Downloaded newer image for calico/csi:v3.30.3
-docker.io/calico/csi:v3.30.3
-Saving operator:v1.38.6
-v1.38.6: Pulling from tigera/operator
-d47710f2e067: Pulling fs layer
-590835e90beb: Pulling fs layer
-d47710f2e067: Download complete
-d47710f2e067: Pull complete
-590835e90beb: Verifying Checksum
-590835e90beb: Download complete
-590835e90beb: Pull complete
-Digest: sha256:00a7a9b62f9b9a4e0856128b078539783b8352b07f707bff595cb604cc580f6e
-Status: Downloaded newer image for quay.io/tigera/operator:v1.38.6
-quay.io/tigera/operator:v1.38.6
-#+end_example
 
 * Create demo environment manually
 
@@ -239,49 +240,14 @@ done
 ** Install Calico CRDs
 
 #+begin_src bash :results output
-kubectl create -f operator-crds.yaml
+kubectl apply -f operator-crds.yaml
 #+end_src
 
-#+RESULTS:
-#+begin_example
-customresourcedefinition.apiextensions.k8s.io/apiservers.operator.tigera.io created
-customresourcedefinition.apiextensions.k8s.io/gatewayapis.operator.tigera.io created
-customresourcedefinition.apiextensions.k8s.io/goldmanes.operator.tigera.io created
-customresourcedefinition.apiextensions.k8s.io/imagesets.operator.tigera.io created
-customresourcedefinition.apiextensions.k8s.io/installations.operator.tigera.io created
-customresourcedefinition.apiextensions.k8s.io/managementclusterconnections.operator.tigera.io created
-customresourcedefinition.apiextensions.k8s.io/tigerastatuses.operator.tigera.io created
-customresourcedefinition.apiextensions.k8s.io/whiskers.operator.tigera.io created
-customresourcedefinition.apiextensions.k8s.io/bgpconfigurations.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/bgpfilters.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/bgppeers.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/blockaffinities.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/caliconodestatuses.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/clusterinformations.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/felixconfigurations.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/globalnetworkpolicies.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/globalnetworksets.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/hostendpoints.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/ipamblocks.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/ipamconfigs.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/ipamhandles.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/ippools.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/ipreservations.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/kubecontrollersconfigurations.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/networkpolicies.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/networksets.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/stagedglobalnetworkpolicies.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/stagedkubernetesnetworkpolicies.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/stagednetworkpolicies.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/tiers.crd.projectcalico.org created
-customresourcedefinition.apiextensions.k8s.io/adminnetworkpolicies.policy.networking.k8s.io created
-customresourcedefinition.apiextensions.k8s.io/baselineadminnetworkpolicies.policy.networking.k8s.io created
-#+end_example
 
 ** Install the Tigera Operator
 
 #+begin_src bash :results output
-kubectl create -f tigera-operator.yaml
+kubectl apply -f tigera-operator.yaml
 #+end_src
 
 #+RESULTS:
@@ -296,8 +262,8 @@ kubectl create -f tigera-operator.yaml
 ** Install the Calico resources
 
 #+begin_src bash :results output
-kubectl create ns calico-system
-kubectl create -f custom-resources.yaml
+kubectl create ns calico-system 2>/dev/null || true
+kubectl apply -f custom-resources.yaml
 #+end_src
 
 #+RESULTS:
@@ -307,7 +273,7 @@ kubectl create -f custom-resources.yaml
 
 ** Install postgres YAML manifests
 
-#+begin_src bash :results output :dir 2025/postgresql/hack
+#+begin_src bash :results output :dir 2026/postgresql/hack
 kubectl create ns postgres --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f postgres.yaml
 #+end_src
@@ -319,6 +285,24 @@ kubectl apply -f postgres.yaml
 : service/release-name-postgres created
 : statefulset.apps/release-name-postgres created
 
+** Stage the deny policy (dry-run)
+
+Apply the staged =ClusterNetworkPolicy=. It will /not/ enforce yet,
+but Whisker will show what it would block as "pending/staged" actions.
+
+#+begin_src bash :results output
+kubectl apply -f staged-cnp.yaml
+#+end_src
+
+** Enforce the deny policy
+
+When ready, remove the staged policy and enforce the real
+=ClusterNetworkPolicy=:
+
+#+begin_src bash :results output
+kubectl delete -f staged-cnp.yaml
+kubectl apply -f networkpolicy.yaml
+#+end_src
 * Cleanup
 ** Delete kind cluster
 
