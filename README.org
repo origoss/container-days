@@ -152,7 +152,7 @@ curl -LO https://raw.githubusercontent.com/projectcalico/calico/v3.32.0/manifest
 
 Then update =custom-resources.yaml= so that the
 =spec.calicoNetwork.ipPools.[0].cidr= field has the value
-=192.168.101.0= in the =Installation= resource.
+=192.168.101.0/24= in the =Installation= resource.
 
 *** Container images
 

@@ -32,9 +32,36 @@ else
     echo "Created dummy interface 'whisker' with 3.14.137.65/28."
 fi
 
-# --- 2. Build and save the compromised Postgres image ---
+# --- 2. Pull and save Calico images ---
 echo ""
-echo "=== 2. Build compromised Postgres image ==="
+echo "=== 2. Pull and save Calico images ==="
+
+CALICO_VERSION="v3.32.0"
+CALICO_IMAGES=("typha" "kube-controllers" "node" "csi")
+OPERATOR_VERSION="v1.42.0"
+
+for IMAGE in "${CALICO_IMAGES[@]}"; do
+    TAR="${IMAGE}.tar"
+    if [ -f "$TAR" ]; then
+        echo "${IMAGE}:${CALICO_VERSION} already saved — skipping."
+    else
+        echo "Pulling ${IMAGE}:${CALICO_VERSION}..."
+        docker pull "quay.io/calico/${IMAGE}:${CALICO_VERSION}"
+        docker save "quay.io/calico/${IMAGE}:${CALICO_VERSION}" -o "$TAR"
+    fi
+done
+
+if [ -f operator.tar ]; then
+    echo "operator:${OPERATOR_VERSION} already saved — skipping."
+else
+    echo "Pulling operator:${OPERATOR_VERSION}..."
+    docker pull "quay.io/tigera/operator:${OPERATOR_VERSION}"
+    docker save "quay.io/tigera/operator:${OPERATOR_VERSION}" -o operator.tar
+fi
+
+# --- 3. Build and save the compromised Postgres image ---
+echo ""
+echo "=== 3. Build compromised Postgres image ==="
 
 if [ -f postgres_16.tar ]; then
     echo "postgres_16.tar already exists — skipping build."
@@ -44,9 +71,9 @@ else
     echo "Built and saved postgresql/postgresql:16."
 fi
 
-# --- 3. Create the kind cluster ---
+# --- 4. Create the kind cluster ---
 echo ""
-echo "=== 3. Create kind cluster ==="
+echo "=== 4. Create kind cluster ==="
 
 if kind get clusters 2>/dev/null | grep -q "whisker-the-game"; then
     echo "Cluster 'whisker-the-game' already exists — skipping."
@@ -60,9 +87,9 @@ fi
 
 kubectl cluster-info
 
-# --- 4. Load container images into kind nodes ---
+# --- 5. Load container images into kind nodes ---
 echo ""
-echo "=== 4. Load container images ==="
+echo "=== 5. Load container images ==="
 
 IMAGES=("typha" "kube-controllers" "node" "csi" "operator" "postgres_16")
 NODES="whisker-the-game-control-plane,whisker-the-game-worker,whisker-the-game-worker2"
@@ -80,9 +107,9 @@ done
 
 echo "All images loaded."
 
-# --- 5. Install Calico ---
+# --- 6. Install Calico ---
 echo ""
-echo "=== 5. Install Calico ==="
+echo "=== 6. Install Calico ==="
 
 # operator-crds.yaml is multi-MB; client-side `kubectl create`/`apply` chokes
 # (CRDs exceed the last-applied-config annotation limit) and isn't re-runnable
@@ -118,9 +145,9 @@ until kubectl get tigerastatus --no-headers 2>/dev/null | grep -q . \
 done
 kubectl get pods -n calico-system
 
-# --- 6. Install Postgres ---
+# --- 7. Install Postgres ---
 echo ""
-echo "=== 6. Install Postgres ==="
+echo "=== 7. Install Postgres ==="
 
 kubectl create ns postgres --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f postgres.yaml
@@ -132,9 +159,9 @@ echo "Waiting for Postgres pod to be ready..."
 kubectl rollout status statefulset/release-name-postgres -n postgres --timeout=180s
 kubectl get pods -n postgres
 
-# --- 7. Verify exfiltration ---
+# --- 8. Verify exfiltration ---
 echo ""
-echo "=== 7. Verify exfiltration is running ==="
+echo "=== 8. Verify exfiltration is running ==="
 
 if kubectl exec -n postgres release-name-postgres-0 -- ps -C nc &>/dev/null; then
     echo "netcat exfiltration process is running inside the postgres pod."
@@ -144,7 +171,7 @@ else
     echo "  kubectl logs -n postgres release-name-postgres-0" >&2
 fi
 
-# --- 8. Start the exfiltration sink ---
+# --- 9. Start the exfiltration sink ---
 echo ""
 echo "=== Setup complete ==="
 echo ""
