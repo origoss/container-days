@@ -180,5 +180,6 @@ echo "Data flowing here is the evidence for the whole demo."
 echo "Leave this terminal running."
 echo ""
 
+sudo -v
 NC_PATH="$(command -v nc)"
 exec sudo "$NC_PATH" -kl 3.14.137.65 137 | pv > /dev/null
